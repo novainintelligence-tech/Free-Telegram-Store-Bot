@@ -39,8 +39,10 @@ class TransactionStatus(enum.Enum):
 
 class PaymentMethod(enum.Enum):
     """Enum for payment methods."""
-    CRYPTO_WALLET = "crypto_wallet"
+    MANUAL_CRYPTO = "manual_crypto"
     CARD = "card"
+    # Backward-compatible legacy value for older database rows.
+    CRYPTO_WALLET = "crypto_wallet"
 
 
 class User(Base):
@@ -190,6 +192,8 @@ class Transaction(Base):
     amount = Column(Float, nullable=False)
     payment_method = Column(Enum(PaymentMethod), nullable=False)
     crypto_address = Column(String(500), nullable=True)
+    tx_hash = Column(String(255), nullable=True)
+    payment_note = Column(Text, nullable=True)
     status = Column(Enum(TransactionStatus), default=TransactionStatus.PENDING, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     expires_at = Column(DateTime, nullable=True)

@@ -57,6 +57,9 @@ def main():
                 CallbackQueryHandler(payment_handlers.payment_method_crypto, pattern="^pay_crypto$"),
                 CallbackQueryHandler(payment_handlers.payment_method_card, pattern="^pay_card$"),
             ],
+            payment_handlers.MANUAL_CRYPTO_HASH: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, payment_handlers.manual_crypto_hash),
+            ],
         },
         fallbacks=[
             CallbackQueryHandler(payment_handlers.cancel_topup, pattern="^cancel$"),

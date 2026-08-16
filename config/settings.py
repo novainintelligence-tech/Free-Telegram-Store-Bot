@@ -18,7 +18,16 @@ class Settings:
     # Database Settings
     DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///bot_database.db')
 
-    # Crypto Payment Settings
+    # Manual crypto wallet payment settings
+    PAYMENT_BTC_ADDRESS = os.getenv('PAYMENT_BTC_ADDRESS', '')
+    PAYMENT_USDT_TRC20_ADDRESS = os.getenv('PAYMENT_USDT_TRC20_ADDRESS', '')
+    PAYMENT_USDC_ADDRESS = os.getenv('PAYMENT_USDC_ADDRESS', '')
+    AUTO_CONFIRM = os.getenv('AUTO_CONFIRM', 'true').strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
+    INFURA_URL = os.getenv('INFURA_URL', '')
+    TRONGRID_API_KEY = os.getenv('TRONGRID_API_KEY', '')
+    BTC_API_KEY = os.getenv('BTC_API_KEY', '')
+
+    # Legacy CryptoBot integration kept for compatibility but disabled by default.
     CRYPTO_BOT_API_KEY = os.getenv('CRYPTO_BOT_API_KEY', '')
 
     # Telegram Payments (Card) Settings

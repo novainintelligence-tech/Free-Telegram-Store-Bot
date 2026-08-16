@@ -14,10 +14,10 @@ from utils import (
     calculate_expiry_time, notify_admin, check_user_banned
 )
 from config.settings import settings as app_settings
-from services.crypto_bot import CryptoBotService
+from services.manual_crypto import ManualCryptoService
 
 # Conversation states for top-up
-AMOUNT, METHOD = range(2)
+AMOUNT, METHOD, MANUAL_CRYPTO_HASH = range(3)
 
 # Conversation states for direct purchase
 PURCHASE_QUANTITY = 10
@@ -67,7 +67,7 @@ async def topup_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def payment_method_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle Crypto Wallet payment method selection."""
+    """Create a manual crypto top-up request with wallet addresses and transaction hash capture."""
     query = update.callback_query
     await query.answer()
 
@@ -81,128 +81,167 @@ async def payment_method_crypto(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text("❌ User not found.")
             return ConversationHandler.END
 
-        # Check if user already has a pending CryptoBot transaction
         existing_pending = session.query(Transaction).filter_by(
             user_id=user.id,
-            payment_method=PaymentMethod.CRYPTO_WALLET,
+            payment_method=PaymentMethod.MANUAL_CRYPTO,
             status=TransactionStatus.PENDING
         ).first()
 
         if existing_pending:
-            # Show full payment details for the existing pending order
-            # Extract pay_url from crypto_address (format: "invoice_id|pay_url")
-            if existing_pending.crypto_address and "|" in existing_pending.crypto_address:
-                invoice_id, pay_url = existing_pending.crypto_address.split("|", 1)
-            else:
-                pay_url = existing_pending.crypto_address if existing_pending.crypto_address else "#"
+            message = f"""⚠️ You already have a pending manual crypto payment.
 
-            message = f"""⚠️ You already have a pending CryptoBot payment!
-
-💬 CryptoBot Payment
+💬 Manual Crypto Payment
 
 💰 Amount: {format_price(existing_pending.amount)}
 🆔 Order ID: #{existing_pending.id}
 
-Click the button below to complete your payment. You can pay with ANY cryptocurrency supported by CryptoBot:
-
-✅ BTC (Bitcoin)
-✅ TON (Toncoin)
-✅ USDT (TRC20, TON)
-✅ USDC (TRC20, TON)
-✅ ETH (Ethereum)
-✅ LTC (Litecoin)
-✅ BNB (Binance Coin)
-✅ TRX (Tron)
-And many more!
-
-The system will automatically verify and add ${existing_pending.amount:.2f} to your balance as soon as your payment is confirmed.
+Please complete the outstanding transaction or wait for admin confirmation.
 
 ⏰ Expires: {existing_pending.expires_at.strftime('%Y-%m-%d %H:%M:%S UTC') if existing_pending.expires_at else 'N/A'}
 
 You cannot create a new order until this one is completed or expired."""
-
-            # Create keyboard with payment button
-            keyboard = [
-                [InlineKeyboardButton("💳 Pay with Any Crypto", url=pay_url)],
-                [InlineKeyboardButton("❌ Cancel", callback_data="cancel")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            await query.edit_message_text(
-                message,
-                reply_markup=reply_markup,
-                parse_mode='Markdown'
-            )
+            await query.edit_message_text(message, reply_markup=create_cancel_keyboard())
             return ConversationHandler.END
 
-        # Create transaction record
         transaction = Transaction(
             user_id=user.id,
             amount=usd_amount,
-            payment_method=PaymentMethod.CRYPTO_WALLET,
+            payment_method=PaymentMethod.MANUAL_CRYPTO,
             status=TransactionStatus.PENDING,
-            expires_at=calculate_expiry_time(app_settings.PAYMENT_EXPIRY_HOURS)
+            expires_at=calculate_expiry_time(app_settings.PAYMENT_EXPIRY_HOURS),
+            crypto_address=f"BTC:{app_settings.PAYMENT_BTC_ADDRESS};USDT:{app_settings.PAYMENT_USDT_TRC20_ADDRESS};USDC:{app_settings.PAYMENT_USDC_ADDRESS}"
         )
         session.add(transaction)
         session.commit()
         session.refresh(transaction)
+        context.user_data['pending_manual_crypto_txn_id'] = transaction.id
 
-        # Generate payment invoice in USD (accepts any cryptocurrency)
-        crypto_service = CryptoBotService()
-        payment_address = crypto_service.generate_payment_address(
-            usd_amount,
-            transaction.id
-        )
+    btc_address = app_settings.PAYMENT_BTC_ADDRESS or 'Not configured'
+    usdt_address = app_settings.PAYMENT_USDT_TRC20_ADDRESS or 'Not configured'
+    usdc_address = app_settings.PAYMENT_USDC_ADDRESS or 'Not configured'
 
-        if not payment_address:
-            transaction.status = TransactionStatus.FAILED
-            session.commit()
-            await query.edit_message_text("❌ Failed to generate payment invoice. Please try again.")
-            return ConversationHandler.END
-
-        # Update transaction with crypto address (format: "invoice_id|pay_url")
-        transaction.crypto_address = payment_address
-        session.commit()
-
-        # Extract pay_url from payment_address
-        if "|" in payment_address:
-            invoice_id, pay_url = payment_address.split("|", 1)
-            print(f"Invoice created: ID={invoice_id}, URL={pay_url}")
-        else:
-            # Fallback for unexpected format
-            pay_url = payment_address
-
-        # Show payment instructions
-        message = f"""💬 CryptoBot Payment
+    message = f"""💬 Manual Crypto Payment
 
 💰 Amount: {format_price(usd_amount)}
-🆔 Order ID: #{transaction.id}
+🆔 Order ID: #{context.user_data.get('pending_manual_crypto_txn_id')}
 
-Click the button below to open the payment page. You can pay with ANY cryptocurrency supported by CryptoBot:
+Please send the exact payment amount to one of the wallets below. After sending, reply with the transaction hash in this format:
 
-✅ BTC (Bitcoin)
-✅ TON (Toncoin)
-✅ USDT (TRC20, TON)
-✅ USDC (TRC20, TON)
-✅ ETH (Ethereum)
-✅ LTC (Litecoin)
-✅ BNB (Binance Coin)
-✅ TRX (Tron)
-And many more!
+BTC <transaction_hash>
+USDT_TRC20 <transaction_hash>
+USDC <transaction_hash>
 
-The system will automatically verify and add ${usd_amount:.2f} to your balance as soon as your payment is confirmed.
+✅ BTC (Bitcoin):
+{btc_address}
 
-⏰ This order will expire in 30 Minutes."""
+✅ USDT (TRC20):
+{usdt_address}
 
-        # Create keyboard with payment button
-        keyboard = [
-            [InlineKeyboardButton("💳 Pay with Any Crypto", url=pay_url)],
-            [InlineKeyboardButton("❌ Cancel", callback_data="cancel")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+✅ USDC (Ethereum mainnet):
+{usdc_address}
 
-        await query.edit_message_text(message, reply_markup=reply_markup)
+⚠️ The payment will be confirmed by admin manually unless automatic verification is enabled.
 
+⏰ This order will expire in 30 minutes."""
+
+    await query.edit_message_text(message, reply_markup=create_cancel_keyboard())
+    return MANUAL_CRYPTO_HASH
+
+
+async def manual_crypto_hash(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Capture the submitted transaction hash and try to auto-confirm it."""
+    user_text = (update.message.text or '').strip()
+    if not user_text:
+        await update.message.reply_text("❌ Please send the transaction hash in the format: BTC <hash>", reply_markup=create_cancel_keyboard())
+        return MANUAL_CRYPTO_HASH
+
+    txn_id = context.user_data.get('pending_manual_crypto_txn_id')
+    if not txn_id:
+        await update.message.reply_text("❌ No pending manual payment was found. Please start top-up again.")
+        return ConversationHandler.END
+
+    coin = None
+    tx_hash = user_text
+    if user_text.upper().startswith('BTC '):
+        coin = 'btc'
+        tx_hash = user_text.split(None, 1)[1]
+    elif user_text.upper().startswith('USDT '):
+        coin = 'usdt_trc20'
+        tx_hash = user_text.split(None, 1)[1]
+    elif user_text.upper().startswith('USDT_TRC20 '):
+        coin = 'usdt_trc20'
+        tx_hash = user_text.split(None, 1)[1]
+    elif user_text.upper().startswith('USDC '):
+        coin = 'usdc'
+        tx_hash = user_text.split(None, 1)[1]
+    elif user_text.upper().startswith('USDC_ETH '):
+        coin = 'usdc'
+        tx_hash = user_text.split(None, 1)[1]
+    elif '0x' in user_text.lower() or user_text.lower().startswith('t'):
+        coin = 'usdc' if '0x' in user_text.lower() else 'btc'
+        tx_hash = user_text
+    else:
+        coin = 'btc'
+        tx_hash = user_text
+
+    txn_amount = None
+    with get_db_session() as session:
+        transaction = session.query(Transaction).filter_by(id=txn_id).first()
+        if not transaction:
+            await update.message.reply_text("❌ Payment record not found.")
+            return ConversationHandler.END
+
+        # Capture amount while still in session
+        txn_amount = transaction.amount
+        transaction.tx_hash = tx_hash
+        transaction.payment_note = user_text
+        transaction.crypto_address = f"{coin.upper()}|{transaction.crypto_address or ''}"
+        auto_confirm = bool(app_settings.AUTO_CONFIRM)
+
+        if auto_confirm and ManualCryptoService.verify_transaction(tx_hash, coin, txn_amount):
+            transaction.status = TransactionStatus.COMPLETED
+            transaction.completed_at = datetime.utcnow()
+            user = session.query(User).filter_by(id=transaction.user_id).first()
+            if user:
+                user.wallet_balance += txn_amount
+            session.commit()
+
+            user_message = f"""✅ Payment Confirmed!
+
+💰 Amount: {format_price(txn_amount)}
+🔄 Your new wallet balance: {format_price(user.wallet_balance if user else txn_amount)}
+
+Thank you for your payment!"""
+            await update.message.reply_text(user_message, reply_markup=create_main_menu_keyboard())
+
+            admin_message = f"""💰 Automatic Manual Crypto Payment Received
+
+👤 User ID: {transaction.user_id}
+💰 Amount: {format_price(txn_amount)}
+📝 Transaction ID: #{transaction.id}
+🔗 Coin: {coin.upper()}
+🧾 Tx Hash: {tx_hash}"""
+            await notify_admin(context, admin_message)
+            context.user_data.pop('pending_manual_crypto_txn_id', None)
+            return ConversationHandler.END
+
+        session.commit()
+
+    await update.message.reply_text(
+        "✅ Your payment proof was received. Admin confirmation is pending."
+        "\n\nOnce reviewed, your wallet will be credited automatically.",
+        reply_markup=create_main_menu_keyboard()
+    )
+
+    admin_message = f"""🧾 Manual Crypto Payment Submitted
+
+👤 User ID: {update.effective_user.id}
+💰 Amount: {format_price(txn_amount if txn_amount else usd_amount)}
+📝 Transaction ID: #{txn_id}
+🔗 Coin: {coin.upper()}
+🧾 Tx Hash: {tx_hash}"""
+    await notify_admin(context, admin_message)
+    context.user_data.pop('pending_manual_crypto_txn_id', None)
     return ConversationHandler.END
 
 
@@ -428,9 +467,22 @@ async def check_pending_payments(context: ContextTypes.DEFAULT_TYPE):
 
                 # Verify payment based on payment method
                 is_paid = False
-                if transaction.payment_method == PaymentMethod.CRYPTO_WALLET:
-                    crypto_service = CryptoBotService()
-                    is_paid = crypto_service.check_payment_status(transaction.crypto_address, transaction.amount)
+                if transaction.payment_method in {PaymentMethod.MANUAL_CRYPTO, PaymentMethod.CRYPTO_WALLET}:
+                    if transaction.tx_hash:
+                        coin = 'btc'
+                        if transaction.payment_note:
+                            note = transaction.payment_note.upper()
+                            if 'USDT' in note or 'TRC20' in note:
+                                coin = 'usdt_trc20'
+                            elif 'USDC' in note:
+                                coin = 'usdc'
+                        elif transaction.crypto_address:
+                            addr = str(transaction.crypto_address).upper()
+                            if 'USDT' in addr or 'TRC20' in addr:
+                                coin = 'usdt_trc20'
+                            elif 'USDC' in addr:
+                                coin = 'usdc'
+                        is_paid = ManualCryptoService.verify_transaction(transaction.tx_hash, coin, transaction.amount)
 
                 if is_paid:
                     # Update transaction status
